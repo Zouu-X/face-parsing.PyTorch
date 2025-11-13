@@ -4,6 +4,7 @@ import os.path as osp
 from typing import Tuple
 
 import argparse
+import json
 import numpy as np
 from PIL import Image
 import cv2
@@ -82,6 +83,8 @@ def main():
                         help='Directory to write face masks')
     parser.add_argument('--model', '--checkpoint', '--cp', dest='cp', required=True,
                         help='Path to pretrained model .pth file')
+    parser.add_argument('--frontal_json', '--labels', '--json', dest='labels_json', required=True,
+                        help='Path to frontal_labels.json; keys define which images to process')
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -89,12 +92,27 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     net = build_net(args.cp, device)
 
-    # Process only image-looking files to be safe
-    names = sorted([n for n in os.listdir(args.inp_dir)
-                    if n.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp'))])
+    # Load labels JSON and determine image names to process
+    with open(args.labels_json, 'r') as f:
+        labels_obj = json.load(f)
 
-    for name in names:
-        in_path = osp.join(args.inp_dir, name)
+    if not isinstance(labels_obj, dict):
+        raise ValueError('Expected frontal_labels.json to be a dict of keys; got %r' % type(labels_obj).__name__)
+
+    name_keys = list(labels_obj.keys())
+    produced = 0
+
+    for key in name_keys:
+        # Use <key>.png in the input directory
+        key_str = osp.basename(str(key))
+        base_no_ext, _ = osp.splitext(key_str)
+        file_name = base_no_ext + '.png'
+        in_path = osp.join(args.inp_dir, file_name)
+
+        if not osp.isfile(in_path):
+            # Skip if not found; continue gracefully
+            continue
+
         try:
             img = Image.open(in_path).convert('RGB')
         except Exception:
@@ -108,12 +126,15 @@ def main():
         out_w, out_h = img.size
         mask = make_face_mask(parsing, (out_w, out_h))
 
-        base, _ = osp.splitext(name)
+        base = base_no_ext
         out_name = base + '.png'
         out_path = osp.join(args.out_dir, out_name)
-        cv2.imwrite(out_path, mask)
+        if cv2.imwrite(out_path, mask):
+            produced += 1
+
+    # Summary
+    print(f"Produced {produced} face mask(s) out of {len(name_keys)} key(s).")
 
 
 if __name__ == '__main__':
     main()
-
