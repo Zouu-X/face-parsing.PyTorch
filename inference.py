@@ -132,6 +132,15 @@ def vis_parsing_maps(im, parsing_anno, stride, save_im=False, save_path='vis_res
         no_eyes = (no_eyes.astype(np.uint8) * 255)
         no_eyes = np.squeeze(no_eyes)
 
+        #brows
+        brows_save_path = vis_path + '/brows/'
+        os.makedirs(brows_save_path, exist_ok=True)
+        l_brow_uint8 = (l_brow.astype(np.uint8) * 255)
+        r_brow_uint8 = (r_brow.astype(np.uint8) * 255)
+        combined_brows = cv2.bitwise_or(l_brow_uint8, r_brow_uint8)
+        combined_brows = np.squeeze(combined_brows)
+        cv2.imwrite(brows_save_path + f'{im_name}.png', combined_brows)
+
         #process eye area
         combined_eyes = cv2.bitwise_or(r_eyes_uint8, l_eyes_uint8)
         combined_eyes = combined_eyes - no_eyes
