@@ -184,9 +184,15 @@ def vis_parsing_maps(im, parsing_anno, stride, parts, save_im=False, save_path='
             #process eye area
             combined_eyes = cv2.bitwise_or(r_eyes_uint8, l_eyes_uint8)
             combined_eyes = combined_eyes - no_eyes
+            
+            # Exclude brows from eyes mask
+            l_brow_uint8 = (l_brow.astype(np.uint8) * 255).squeeze()
+            r_brow_uint8 = (r_brow.astype(np.uint8) * 255).squeeze()
+            combined_brows = cv2.bitwise_or(l_brow_uint8, r_brow_uint8)
             combined_eyes = np.squeeze(combined_eyes)
+            combined_eyes = cv2.bitwise_and(combined_eyes, cv2.bitwise_not(combined_brows))
 
-            eyes_save_path = os.path.join(base_dir, 'eyes')
+            eyes_save_path = os.path.join(base_dir, 'eyes_ex')
             os.makedirs(eyes_save_path, exist_ok=True)
             cv2.imwrite(os.path.join(eyes_save_path, f'{im_name}.png'), combined_eyes)
 
