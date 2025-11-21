@@ -14,11 +14,8 @@ import argparse
 import tqdm
 
 parser = argparse.ArgumentParser()
-# Input/output args (support aliases for convenience)
-parser.add_argument('--data', '--input', dest='data', required=True, help='Path to input images directory')
-parser.add_argument('--output_path', '--output', dest='output_path', required=True, help='Directory to write results')
-# Pretrained model/checkpoint path
-parser.add_argument('--model', '--checkpoint', '--cp', dest='cp', required=True, help='Path to pretrained model .pth file')
+parser.add_argument('--data', required=True)
+parser.add_argument('--output_path', required=True)
 args = parser.parse_args()
 
 def process_eyes(eyes_uint8, face):
@@ -80,9 +77,8 @@ def vis_parsing_maps(im, parsing_anno, stride, save_im=False, save_path='vis_res
 
     # Save result or not
     if save_im:
-        im_name = os.path.splitext(os.path.basename(save_path))[0]
-        base_dir = os.path.dirname(save_path)
-        vis_path = os.path.join(base_dir, 'vis') + '/'
+        im_name = save_path[:-4].split('/')[-1]
+        vis_path = f'{args.output_path}/vis/'
         os.makedirs(vis_path, exist_ok=True)
 
         skin = (vis_parsing_anno == 1)[..., None]
@@ -131,15 +127,6 @@ def vis_parsing_maps(im, parsing_anno, stride, save_im=False, save_path='vis_res
 
         no_eyes = (no_eyes.astype(np.uint8) * 255)
         no_eyes = np.squeeze(no_eyes)
-
-        #brows
-        brows_save_path = vis_path + '/brows/'
-        os.makedirs(brows_save_path, exist_ok=True)
-        l_brow_uint8 = (l_brow.astype(np.uint8) * 255)
-        r_brow_uint8 = (r_brow.astype(np.uint8) * 255)
-        combined_brows = cv2.bitwise_or(l_brow_uint8, r_brow_uint8)
-        combined_brows = np.squeeze(combined_brows)
-        cv2.imwrite(brows_save_path + f'{im_name}.png', combined_brows)
 
         #process eye area
         combined_eyes = cv2.bitwise_or(r_eyes_uint8, l_eyes_uint8)
@@ -199,7 +186,6 @@ def evaluate(respth='./res/test_res', dspth='./data', cp='model_final_diss.pth')
 
 
 if __name__ == "__main__":
-    # Output directory is now respected via evaluate's 'respth'.
-    # Checkpoint is fully user-specified via --model/--checkpoint/--cp
-    evaluate(respth=args.output_path, dspth=args.data, cp=args.cp)
+    evaluate(dspth=args.data, cp=os.path.join(f'{os.path.abspath(os.path.dirname(__file__))}/res/cp', '79999_iter.pth'))
+
 
