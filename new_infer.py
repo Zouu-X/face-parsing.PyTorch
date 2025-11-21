@@ -65,7 +65,7 @@ def process_eyes(eyes_uint8, face):
     return eyes_uint8
 
 
-def get_cheek_mask(skin_mask, eye_mask, nose_mask, face_side='left'):
+def get_cheek_mask(skin_mask, eye_mask, nose_mask, ulip_mask, face_side='left'):
     """
     Generates a single-side cheek mask based on relative facial feature positions.
     
@@ -73,6 +73,7 @@ def get_cheek_mask(skin_mask, eye_mask, nose_mask, face_side='left'):
         skin_mask (np.array): Binary mask of the skin (uint8).
         eye_mask (np.array): Binary mask of the eye + eyebrow on the corresponding side (uint8).
         nose_mask (np.array): Binary mask of the nose (uint8).
+        ulip_mask (np.array): Binary mask of the upper lip (uint8).
         face_side (str): 'left' for image left (subject's right cheek), 'right' for image right (subject's left cheek).
     
     Returns:
@@ -81,6 +82,7 @@ def get_cheek_mask(skin_mask, eye_mask, nose_mask, face_side='left'):
     # 1. Get Bounding Boxes for features
     contours_eye, _ = cv2.findContours(eye_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours_nose, _ = cv2.findContours(nose_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours_ulip, _ = cv2.findContours(ulip_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     # Fail-safe: Return empty mask if features are missing (e.g., extreme profile view)
     if not contours_eye or not contours_nose:
@@ -95,8 +97,13 @@ def get_cheek_mask(skin_mask, eye_mask, nose_mask, face_side='left'):
     # 2. Define Geometric Boundaries (Heuristics)
     # Top: Bottom edge of the eye BBox
     top = e_y + e_h
-    # Bottom: Bottom edge of the nose BBox (scaled by 0.8 to avoid the jawline)
-    bottom = n_y + int(n_h * 0.8)
+    
+    # Bottom: Top edge of the upper lip BBox, fallback to nose bottom * 0.8 if lip not found
+    if contours_ulip:
+        ul_x, ul_y, ul_w, ul_h = cv2.boundingRect(np.vstack(contours_ulip))
+        bottom = ul_y
+    else:
+        bottom = n_y + int(n_h * 0.8)
     
     # Boundary safety checks
     top = max(0, top)
@@ -212,6 +219,7 @@ def vis_parsing_maps(im, parsing_anno, stride, parts, save_im=False, save_path='
             # Ensure inputs are single-channel 2D arrays (H, W)
             skin_u8 = (skin.astype(np.uint8) * 255).squeeze()
             nose_u8 = (nose.astype(np.uint8) * 255).squeeze()
+            ulip_u8 = (u_lip.astype(np.uint8) * 255).squeeze()
             
             # 2. Aggregate Eye Groups (Eyebrow + Eye) for stable BBoxes
             # Note: See "Developer Notes" regarding glasses (Class 6)
@@ -224,8 +232,8 @@ def vis_parsing_maps(im, parsing_anno, stride, parts, save_im=False, save_path='
             # Mapping Logic:
             # Image Left = Subject's Right Cheek -> Reference Right Eye (r_eye_group)
             # Image Right = Subject's Left Cheek -> Reference Left Eye (l_eye_group)
-            left_cheek_mask = get_cheek_mask(skin_u8, r_eye_group, nose_u8, face_side='left')
-            right_cheek_mask = get_cheek_mask(skin_u8, l_eye_group, nose_u8, face_side='right')
+            left_cheek_mask = get_cheek_mask(skin_u8, r_eye_group, nose_u8, ulip_u8, face_side='left')
+            right_cheek_mask = get_cheek_mask(skin_u8, l_eye_group, nose_u8, ulip_u8, face_side='right')
 
             # 4. Combine and Save
             combined_cheeks = cv2.bitwise_or(left_cheek_mask, right_cheek_mask)
