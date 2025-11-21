@@ -12,6 +12,8 @@ import torchvision.transforms as transforms
 import cv2
 import argparse
 import tqdm
+from torch.utils.data import Dataset, DataLoader
+from concurrent.futures import ThreadPoolExecutor
 
 parser = argparse.ArgumentParser()
 # Input/output args (support aliases for convenience)
@@ -21,6 +23,25 @@ parser.add_argument('--output_path', '--output', '--output_dir', dest='output_pa
 parser.add_argument('--model', '--checkpoint', '--cp', dest='cp', required=True, help='Path to pretrained model .pth file')
 parser.add_argument('--parts', dest='parts', default='all', help='Comma-separated list of parts to extract (e.g., "mouth,eyes"). Default: all')
 args = parser.parse_args()
+
+class FaceInferenceDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.image_paths = [os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert('RGB')
+        original_image = image.copy() # Keep original for visualization
+        
+        if self.transform:
+            image = self.transform(image)
+            
+        return image, img_path, np.array(original_image)
 
 def process_eyes(eyes_uint8, face):
     """Process eye regions by extending bounding box."""
@@ -224,19 +245,34 @@ def evaluate(respth='./res/test_res', dspth='./data', cp='model_final_diss.pth',
         transforms.ToTensor(),
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
+    
+    # Resize transform for the model input
+    class ResizeTransform:
+        def __init__(self, size):
+            self.size = size
+            
+        def __call__(self, img):
+            return img.resize(self.size, Image.BILINEAR)
 
-    with torch.no_grad():
-        for image_path in tqdm.tqdm(os.listdir(dspth)):
-            if not (image_path.endswith('.jpg') or image_path.endswith('.png') or image_path.endswith('.jpeg')):
-                 continue
-            img = Image.open(osp.join(dspth, image_path))
-            image = img.resize((512, 512), Image.BILINEAR)
+    dataset = FaceInferenceDataset(dspth, transform=transforms.Compose([
+        ResizeTransform((512, 512)),
+        to_tensor
+    ]))
+    
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4)
 
-            img = to_tensor(image).unsqueeze(0).cuda()
-            out = net(img)[0]
+    with torch.no_grad(), ThreadPoolExecutor(max_workers=4) as executor:
+        for image, image_path, original_image_np in tqdm.tqdm(dataloader):
+            image = image.cuda()
+            out = net(image)[0]
             parsing = out.squeeze(0).cpu().numpy().argmax(0)
-
-            vis_parsing_maps(image, parsing, stride=1, parts=parts, save_im=True, save_path=osp.join(respth, image_path))
+            
+            # image_path is a tuple of size 1 because batch_size=1
+            current_image_path = image_path[0]
+            original_image = original_image_np[0].numpy() # Convert back to numpy array from tensor
+            
+            # Submit task to executor
+            executor.submit(vis_parsing_maps, original_image, parsing, stride=1, parts=parts, save_im=True, save_path=osp.join(respth, os.path.basename(current_image_path)))
 
 
 if __name__ == "__main__":
