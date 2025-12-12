@@ -3,6 +3,8 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'face-parsing.PyTorch'))
 from model import BiSeNet
 
+import mediapipe as mp
+
 import torch
 import os
 import os.path as osp
@@ -65,68 +67,44 @@ def process_eyes(eyes_uint8, face):
     return eyes_uint8
 
 
-def get_cheek_mask(skin_mask, eye_mask, nose_mask, ulip_mask, face_side='left'):
+def get_cheek_mask_mediapipe(image_rgb, output_size=(512, 512)):
     """
-    Generates a single-side cheek mask based on relative facial feature positions.
-    
-    Args:
-        skin_mask (np.array): Binary mask of the skin (uint8).
-        eye_mask (np.array): Binary mask of the eye + eyebrow on the corresponding side (uint8).
-        nose_mask (np.array): Binary mask of the nose (uint8).
-        ulip_mask (np.array): Binary mask of the upper lip (uint8).
-        face_side (str): 'left' for image left (subject's right cheek), 'right' for image right (subject's left cheek).
-    
-    Returns:
-        np.array: Binary mask of the cheek area (uint8).
+    Generates cheek masks using Mediapipe FaceMesh.
+    Adapted from cheek_mask.py.
     """
-    # 1. Get Bounding Boxes for features
-    contours_eye, _ = cv2.findContours(eye_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours_nose, _ = cv2.findContours(nose_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours_ulip, _ = cv2.findContours(ulip_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    mp_face_mesh = mp.solutions.face_mesh
+    h_out, w_out = output_size
     
-    # Fail-safe: Return empty mask if features are missing (e.g., extreme profile view)
-    if not contours_eye or not contours_nose:
-        return np.zeros_like(skin_mask)
+    # Resize image to match output size for consistent processing
+    image_resized = cv2.resize(image_rgb, (w_out, h_out), interpolation=cv2.INTER_LINEAR)
+    
+    # Initialize mask
+    mask = np.zeros((h_out, w_out), dtype=np.uint8)
 
-    e_x, e_y, e_w, e_h = cv2.boundingRect(np.vstack(contours_eye))
-    n_x, n_y, n_w, n_h = cv2.boundingRect(np.vstack(contours_nose))
-    
-    roi = np.zeros_like(skin_mask)
-    h, w = roi.shape
-    
-    # 2. Define Geometric Boundaries (Heuristics)
-    # Top: Bottom edge of the eye BBox
-    top = e_y + e_h
-    
-    # Bottom: Top edge of the upper lip BBox, fallback to nose bottom * 0.8 if lip not found
-    if contours_ulip:
-        ul_x, ul_y, ul_w, ul_h = cv2.boundingRect(np.vstack(contours_ulip))
-        bottom = ul_y
-    else:
-        bottom = n_y + int(n_h * 0.8)
-    
-    # Boundary safety checks
-    top = max(0, top)
-    bottom = min(h, bottom)
-    if top >= bottom: return np.zeros_like(skin_mask)
+    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as face_mesh:
+        res = face_mesh.process(image_resized)
+        if res.multi_face_landmarks:
+            landmarks = res.multi_face_landmarks[0].landmark
+            
+            # Indices for cheeks (from cheek_mask.py)
+            left_cheek_idx = [123, 116, 117, 118, 119, 120, 121, 47, 126, 209, 49, 129, 203, 206, 207, 187]
+            right_cheek_idx = [352, 345, 346, 347, 348, 349, 350, 277, 355, 429, 279, 358, 423, 426, 427, 411]
 
-    # 3. Define Horizontal Boundaries
-    if face_side == 'left':
-        # Left Cheek (Image Left): From image left edge/eye corner to nose left edge
-        right_bound = n_x
-        # Extend slightly outwards to capture the area under the outer eye corner
-        left_bound = max(0, e_x - 20) 
-        roi[top:bottom, left_bound:right_bound] = 255
-    else:
-        # Right Cheek (Image Right): From nose right edge to image right edge
-        left_bound = n_x + n_w
-        right_bound = min(w, e_x + e_w + 20)
-        roi[top:bottom, left_bound:right_bound] = 255
-        
-    # 4. Core Operation: Intersect ROI with Semantic Skin Mask
-    cheek_final = cv2.bitwise_and(roi, skin_mask)
-    
-    return cheek_final
+            def get_coords(indices, landmarks, width, height):
+                coords = []
+                for idx in indices:
+                    pt = landmarks[idx]
+                    coords.append((int(pt.x * width), int(pt.y * height)))
+                return np.array(coords, dtype=np.int32)
+
+            left_pts = get_coords(left_cheek_idx, landmarks, w_out, h_out)
+            right_pts = get_coords(right_cheek_idx, landmarks, w_out, h_out)
+
+            # Draw filled polygons
+            cv2.fillConvexPoly(mask, cv2.convexHull(left_pts), 255)
+            cv2.fillConvexPoly(mask, cv2.convexHull(right_pts), 255)
+            
+    return mask
 
 
 
@@ -215,28 +193,10 @@ def vis_parsing_maps(im, parsing_anno, stride, parts, save_im=False, save_path='
 
         # --- NEW: Cheeks Extraction Logic ---
         if 'cheeks' in parts:
-            # 1. Data Type Conversion (Boolean -> Uint8)
-            # Ensure inputs are single-channel 2D arrays (H, W)
-            skin_u8 = (skin.astype(np.uint8) * 255).squeeze()
-            nose_u8 = (nose.astype(np.uint8) * 255).squeeze()
-            ulip_u8 = (u_lip.astype(np.uint8) * 255).squeeze()
-            
-            # 2. Aggregate Eye Groups (Eyebrow + Eye) for stable BBoxes
-            # Note: See "Developer Notes" regarding glasses (Class 6)
-            l_eye_group = np.logical_or.reduce((l_brow, l_eye, eye_g)).astype(np.uint8) * 255
-            r_eye_group = np.logical_or.reduce((r_brow, r_eye, eye_g)).astype(np.uint8) * 255
-            l_eye_group = np.squeeze(l_eye_group)
-            r_eye_group = np.squeeze(r_eye_group)
-
-            # 3. Generate Left and Right Cheeks
-            # Mapping Logic:
-            # Image Left = Subject's Right Cheek -> Reference Right Eye (r_eye_group)
-            # Image Right = Subject's Left Cheek -> Reference Left Eye (l_eye_group)
-            left_cheek_mask = get_cheek_mask(skin_u8, r_eye_group, nose_u8, ulip_u8, face_side='left')
-            right_cheek_mask = get_cheek_mask(skin_u8, l_eye_group, nose_u8, ulip_u8, face_side='right')
-
-            # 4. Combine and Save
-            combined_cheeks = cv2.bitwise_or(left_cheek_mask, right_cheek_mask)
+            # --- Mediapipe Cheeks Extraction ---
+            # Generate cheeks mask using Mediapipe (logic from cheek_mask.py)
+            # im is RGB numpy array (original size). We resize inside the helper to 512x512.
+            combined_cheeks = get_cheek_mask_mediapipe(im, output_size=(512, 512))
             
             cheeks_save_path = os.path.join(base_dir, 'cheeks')
             os.makedirs(cheeks_save_path, exist_ok=True)
